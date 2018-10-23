@@ -33,9 +33,10 @@ HEADERS = {
 }
 
 
-def download(medium_type, uri, medium_url, target_folder):
+def download(medium_type, uri, medium_url, target_folder, share_info):
     headers = copy.copy(HEADERS)
     file_name = uri
+    metadata_file_name = uri + '.json'
     if medium_type == 'video':
         file_name += '.mp4'
         headers['user-agent'] = 'Aweme/27014 CFNetwork/974.2.1 Darwin/18.0.0'
@@ -46,6 +47,8 @@ def download(medium_type, uri, medium_url, target_folder):
         return
 
     file_path = os.path.join(target_folder, file_name)
+    metadata_file_path = os.path.join(target_folder, metadata_file_name)
+
     if not os.path.isfile(file_path):
         print("Downloading %s from %s.\n" % (file_name, medium_url))
         retry_times = 0
@@ -56,19 +59,29 @@ def download(medium_type, uri, medium_url, target_folder):
                     retry_times = RETRY
                     print("Access Denied when retrieve %s.\n" % medium_url)
                     raise Exception("Access Denied")
+
                 with open(file_path, 'wb') as fh:
                     for chunk in resp.iter_content(chunk_size=1024):
                         fh.write(chunk)
+
+                if not os.path.isfile(metadata_file_path):
+                    with open(metadata_file_path, 'w') as fh:
+                        fh.write(json.dumps(share_info, ensure_ascii=False, indent=2))
+                else:
+                    try:
+                        os.remove(file_path)
+                    except OSError:
+                        pass
                 break
             except:
                 pass
             retry_times += 1
-        else:
-            try:
-                os.remove(file_path)
-            except OSError:
-                pass
-            print("Failed to retrieve %s from %s.\n" % medium_url)
+    else:
+        try:
+            os.remove(file_path)
+        except OSError:
+            pass
+        print("Failed to retrieve %s from %s.\n" % (file_name, medium_url))
 
 
 def get_real_address(url):
@@ -92,8 +105,8 @@ class DownloadWorker(Thread):
 
     def run(self):
         while True:
-            medium_type, uri, download_url, target_folder = self.queue.get()
-            download(medium_type, uri, download_url, target_folder)
+            medium_type, uri, download_url, target_folder, share_info = self.queue.get()
+            download(medium_type, uri, download_url, target_folder, share_info)
             self.queue.task_done()
 
 
@@ -202,11 +215,11 @@ class CrawlerScheduler(object):
                         'line': '0'
                     }
                 url = download_url.format('&'.join([key + '=' + download_params[key] for key in download_params]))
-                self.queue.put(('video', uri, url, target_folder))
+                self.queue.put(('video', uri, url, target_folder, aweme['share_info']))
             else:
                 if aweme.get('image_infos', None):
                     image = aweme['image_infos']['label_large']
-                    self.queue.put(('image', image['uri'], image['url_list'][0], target_folder))
+                    self.queue.put(('image', image['uri'], image['url_list'][0], target_folder, None))
 
         except KeyError:
             return
