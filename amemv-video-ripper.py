@@ -33,7 +33,7 @@ HEADERS = {
 }
 
 
-def download(medium_type, uri, medium_url, target_folder, share_info):
+def download(medium_type, uri, medium_url, base_folder, target_folder, share_info):
     headers = copy.copy(HEADERS)
     file_name = uri
     metadata_file_name = uri + '.json'
@@ -48,6 +48,7 @@ def download(medium_type, uri, medium_url, target_folder, share_info):
 
     file_path = os.path.join(target_folder, file_name)
     metadata_file_path = os.path.join(target_folder, metadata_file_name)
+    url_path = target_folder.replace(base_folder, '')
 
     if not os.path.isfile(file_path):
         print("Downloading %s from %s.\n" % (file_name, medium_url))
@@ -65,8 +66,12 @@ def download(medium_type, uri, medium_url, target_folder, share_info):
                         fh.write(chunk)
 
                 if not os.path.isfile(metadata_file_path):
-                    with open(metadata_file_path, 'w') as fh:
-                        fh.write(json.dumps(share_info, ensure_ascii=False, indent=2))
+                    if share_info:
+                        with open(metadata_file_path, 'w') as fh:
+                            fh.write(json.dumps({
+                                'title': share_info['share_desc'],
+                                'url': 'http://52.80.188.152:10080/files%s/%s' % (url_path, file_name)
+                            }, ensure_ascii=False, indent=2))
                 else:
                     try:
                         os.remove(file_path)
@@ -105,8 +110,8 @@ class DownloadWorker(Thread):
 
     def run(self):
         while True:
-            medium_type, uri, download_url, target_folder, share_info = self.queue.get()
-            download(medium_type, uri, download_url, target_folder, share_info)
+            medium_type, uri, download_url, base_folder, target_folder, share_info = self.queue.get()
+            download(medium_type, uri, download_url, base_folder, target_folder, share_info)
             self.queue.task_done()
 
 
@@ -116,6 +121,7 @@ class CrawlerScheduler(object):
         self.numbers = []
         self.challenges = []
         self.musics = []
+        self.current_video_count = 0
         for i in range(len(items)):
             url = get_real_address(items[i])
             if not url: continue
@@ -144,9 +150,12 @@ class CrawlerScheduler(object):
             worker.daemon = True
             worker.start()
 
-        for url in self.numbers: self.download_user_videos(url)
-        for url in self.challenges: self.download_challenge_videos(url)
-        for url in self.musics: self.download_music_videos(url)
+        for url in self.numbers:
+            self.download_user_videos(url)
+        for url in self.challenges:
+            self.download_challenge_videos(url)
+        for url in self.musics:
+            self.download_music_videos(url)
 
     def download_user_videos(self, url):
         number = re.findall(r'share/user/(\d+)', url)
@@ -158,6 +167,7 @@ class CrawlerScheduler(object):
         self.queue.join()
         print("\nAweme number %s, video number %s\n\n" % (user_id, str(video_count)))
         print("\nFinish Downloading All the videos from %s\n\n" % user_id)
+        return video_count
 
     def download_challenge_videos(self, url):
         challenge = re.findall('share/challenge/(\d+)', url)
@@ -167,6 +177,7 @@ class CrawlerScheduler(object):
         self.queue.join()
         print("\nAweme challenge #%s, video number %d\n\n" % (challenges_id, video_count))
         print("\nFinish Downloading All the videos from #%s\n\n" % challenges_id)
+        return video_count
 
     def download_music_videos(self, url):
         music = re.findall('share/music/(\d+)', url)
@@ -176,8 +187,14 @@ class CrawlerScheduler(object):
         self.queue.join()
         print("\nAweme music @%s, video number %d\n\n" % (musics_id, video_count))
         print("\nFinish Downloading All the videos from @%s\n\n" % musics_id)
+        return video_count
 
-    def _join_download_queue(self, aweme, target_folder):
+    def _join_download_queue(self, aweme, base_folder, target_folder):
+        if self.current_video_count >= maxVideoCount:
+            return False
+
+        self.current_video_count += 1
+
         try:
             if aweme.get('video', None):
                 uri = aweme['video']['play_addr']['uri']
@@ -215,19 +232,20 @@ class CrawlerScheduler(object):
                         'line': '0'
                     }
                 url = download_url.format('&'.join([key + '=' + download_params[key] for key in download_params]))
-                self.queue.put(('video', uri, url, target_folder, aweme['share_info']))
+                self.queue.put(('video', uri, url, base_folder, target_folder, aweme['share_info']))
             else:
                 if aweme.get('image_infos', None):
                     image = aweme['image_infos']['label_large']
-                    self.queue.put(('image', image['uri'], image['url_list'][0], target_folder, None))
+                    self.queue.put(('image', image['uri'], image['url_list'][0], base_folder, target_folder, None))
 
+            return True
         except KeyError:
-            return
+            return True
         except UnicodeDecodeError:
             print("Cannot decode response data from DESC %s" % aweme['desc'])
-            return
+            return True
 
-    def __download_favorite_media(self, user_id, dytk, hostname, signature, favorite_folder, video_count):
+    def __download_favorite_media(self, user_id, dytk, hostname, signature, base_folder, favorite_folder, video_count):
         if not os.path.exists(favorite_folder):
             os.makedirs(favorite_folder)
         favorite_video_url = "https://%s/aweme/v1/aweme/favorite/?{0}" % hostname
@@ -249,8 +267,8 @@ class CrawlerScheduler(object):
             contentJson = json.loads(res.content.decode('utf-8'))
             favorite_list = contentJson.get('aweme_list', [])
             for aweme in favorite_list:
-                video_count += 1
-                self._join_download_queue(aweme, favorite_folder)
+                if self._join_download_queue(aweme, base_folder, favorite_folder):
+                    video_count += 1
             if contentJson.get('has_more'):
                 max_cursor = contentJson.get('max_cursor')
             else:
@@ -259,7 +277,8 @@ class CrawlerScheduler(object):
 
     def _download_user_media(self, user_id, dytk, url):
         current_folder = os.getcwd()
-        target_folder = os.path.join(current_folder, 'download/%s' % user_id)
+        base_folder = os.path.join(current_folder, 'download')
+        target_folder = os.path.join(base_folder, user_id)
         if not os.path.isdir(target_folder):
             os.mkdir(target_folder)
 
@@ -290,17 +309,16 @@ class CrawlerScheduler(object):
             if not aweme_list:
                 break
             for aweme in aweme_list:
-                video_count += 1
-                self._join_download_queue(aweme, target_folder)
+                if self._join_download_queue(aweme, base_folder, target_folder):
+                    video_count += 1
             if contentJson.get('has_more'):
                 max_cursor = contentJson.get('max_cursor')
             else:
                 break
         if not noFavorite:
             favorite_folder = target_folder + '/favorite'
-            video_count = self.__download_favorite_media(user_id, dytk, hostname, signature, favorite_folder,
+            video_count = self.__download_favorite_media(user_id, dytk, hostname, signature, base_folder, favorite_folder,
                                                          video_count)
-
         if video_count == 0:
             print("There's no video in number %s." % user_id)
 
@@ -312,7 +330,8 @@ class CrawlerScheduler(object):
             print("Challenge #%s does not exist" % challenge_id)
             return
         current_folder = os.getcwd()
-        target_folder = os.path.join(current_folder, 'download/#%s' % challenge_id)
+        base_folder = os.path.join(current_folder, 'download')
+        target_folder = os.path.join(base_folder, '#%s' % challenge_id)
         if not os.path.isdir(target_folder):
             os.mkdir(target_folder)
 
@@ -343,8 +362,8 @@ class CrawlerScheduler(object):
             if not aweme_list:
                 break
             for aweme in aweme_list:
-                video_count += 1
-                self._join_download_queue(aweme, target_folder)
+                if self._join_download_queue(aweme, base_folder, target_folder):
+                    video_count += 1
             if contentJson.get('has_more'):
                 cursor = contentJson.get('cursor')
             else:
@@ -358,7 +377,8 @@ class CrawlerScheduler(object):
             print("Challenge #%s does not exist" % music_id)
             return
         current_folder = os.getcwd()
-        target_folder = os.path.join(current_folder, 'download/@%s' % music_id)
+        base_folder = os.path.join(current_folder, 'download')
+        target_folder = os.path.join(base_folder, '@%s' % music_id)
         if not os.path.isdir(target_folder):
             os.mkdir(target_folder)
 
@@ -392,8 +412,8 @@ class CrawlerScheduler(object):
             if not aweme_list: break
             for aweme in aweme_list:
                 aweme['hostname'] = hostname
-                video_count += 1
-                self._join_download_queue(aweme, target_folder)
+                if self._join_download_queue(aweme, base_folder, target_folder):
+                    video_count += 1
             if contentJson.get('has_more'):
                 cursor = contentJson.get('cursor')
             else:
@@ -434,13 +454,15 @@ def parse_sites(fileName):
 
 
 noFavorite = False
+maxVideoCount = sys.maxsize
+currentVideoCount = 0
 
 if __name__ == "__main__":
     content, opts, args = None, None, []
 
     try:
         if len(sys.argv) >= 2:
-            opts, args = getopt.getopt(sys.argv[1:], "hi:o:", ["no-favorite"])
+            opts, args = getopt.getopt(sys.argv[1:], "hi:o:nm:", ["no-favorite", "max-video-count"])
     except getopt.GetoptError as err:
         usage()
         sys.exit(2)
@@ -462,8 +484,11 @@ if __name__ == "__main__":
 
     if opts:
         for o, val in opts:
-            if o in ("-nf", "--no-favorite"):
+            if o in ("-n", "--no-favorite"):
                 noFavorite = True
+                break
+            if o in ("-m", "--max-video-count"):
+                maxVideoCount = int(val)
                 break
 
     CrawlerScheduler(content)
