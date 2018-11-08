@@ -70,7 +70,7 @@ def download(medium_type, uri, medium_url, base_folder, target_folder, share_inf
                         with open(metadata_file_path, 'w') as fh:
                             fh.write(json.dumps({
                                 'title': share_info['share_desc'],
-                                'url': 'http://52.80.188.152:10080/files%s/%s' % (url_path, file_name)
+                                'url': '%s%s/%s' % (baseUrl, url_path, file_name)
                             }, ensure_ascii=False, indent=2))
                 else:
                     try:
@@ -455,14 +455,15 @@ def parse_sites(fileName):
 
 noFavorite = False
 maxVideoCount = sys.maxsize
+baseUrl = ""
 currentVideoCount = 0
 
 if __name__ == "__main__":
     content, opts, args = None, None, []
 
     try:
-        if len(sys.argv) >= 2:
-            opts, args = getopt.getopt(sys.argv[1:], "hi:o:nm:", ["no-favorite", "max-video-count"])
+        if len(sys.argv) >= 3:
+            opts, args = getopt.getopt(sys.argv[1:], "hi:o:nm:b:", ["no-favorite", "max-video-count", "base-url"])
     except getopt.GetoptError as err:
         usage()
         sys.exit(2)
@@ -489,6 +490,9 @@ if __name__ == "__main__":
                 break
             if o in ("-m", "--max-video-count"):
                 maxVideoCount = int(val)
+                break
+            if o in ("-b", "--base-url"):
+                baseUrl = val
                 break
 
     CrawlerScheduler(content)
